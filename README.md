@@ -1,64 +1,80 @@
-# Stock Alert Monitor
+# Rolling-Stock Maintenance Planner
 
-A web app that monitors stock tickers and sends **push notifications to your iPhone** when a stock moves 1% or more. Tickers are automatically monitored for 8 hours and cleared daily.
+A web application that plans, schedules, and tracks rolling-stock maintenance
+for a train operator. Master data, maintenance plans, and work orders are
+imported from SAP PM.
 
 ## Features
 
-- Add/remove stock tickers via a web dashboard
-- Real-time price monitoring using Yahoo Finance (free, no API key needed)
-- Push notifications to iPhone via [ntfy.sh](https://ntfy.sh) (free)
-- 1% move threshold triggers an alert (configurable)
-- Each ticker expires after 8 hours; all tickers clear at midnight UTC
-- Export monitored tickers to CSV
-- Alert history log
+- **Fleet dashboard** — KPIs for fleet availability, open work orders,
+  overdue tasks, and completed jobs in the current month.
+- **Train / equipment master** — equipment number, model, depot, mileage,
+  status, acquisition date, and last SAP sync timestamp.
+- **Maintenance plans** — time-based and mileage-based cycles with
+  automatic "overdue / due soon / ok" calculation per train.
+- **Work orders** — create, schedule, assign to a technician, track
+  actual vs. estimated hours, and capture completion notes. Linked plans
+  are automatically marked "performed" when a work order is completed.
+- **Calendar schedule** — 6-week Gantt-style calendar colored by priority.
+- **Auto-scheduling** — one click generates scheduled work orders for
+  every overdue or upcoming plan that doesn't already have one.
+- **SAP import** — upload CSV flat-file exports from SAP PM transactions,
+  or run the built-in mock connector to generate a realistic dataset.
+- **JSON API** — `/api/trains`, `/api/work-orders`, `/api/plans`,
+  `/api/upcoming` for external integrations.
+- **CSV export** — `/export/work-orders.csv`.
 
-## Quick Start
-
-### 1. Install dependencies
+## Quick start
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. Set up iPhone notifications
-
-1. Install the **ntfy** app from the [App Store](https://apps.apple.com/app/ntfy/id1625396347).
-2. Open the app and subscribe to a unique topic name (e.g. `my-stock-alerts-abc123`).
-3. Set the same topic when launching the server:
-
-```bash
-export NTFY_TOPIC="my-stock-alerts-abc123"
-```
-
-### 3. Run the app
-
-```bash
 python app.py
 ```
 
-Open [http://localhost:5000](http://localhost:5000) in your browser.
+Open <http://localhost:5000>. On first start the app seeds itself with a
+realistic mock dataset (10 trains, their plans, technicians and work
+orders) so every page is immediately populated.
 
-## Configuration (environment variables)
+## SAP data model
 
-| Variable             | Default                      | Description                        |
-|----------------------|------------------------------|------------------------------------|
-| `NTFY_TOPIC`         | `my-stock-alerts-change-me`  | Your ntfy.sh topic name            |
-| `ALERT_THRESHOLD_PCT`| `1.0`                        | Price change % to trigger alert    |
-| `CHECK_INTERVAL_SEC` | `60`                         | Seconds between price checks       |
+The importer supports four SAP object types. Column names follow standard
+SAP PM field codes — any CSV produced by a user running the matching
+SAP transaction can be dropped into the uploader.
 
-## How It Works
+| Object       | SAP tx | File name        | Required columns |
+|--------------|--------|------------------|------------------|
+| Equipment    | IH08   | `equipment.csv`  | `EQUNR, KTXT, TYPBZ, BAUJJ, SWERK, STATUS, ZZLAUFLEISTUNG, ANSDT` |
+| Plans        | IP15   | `plans.csv`      | `WARPL, EQUNR, MPTXT, TASK_TYPE, ZYKLUS_DAYS, ZYKLUS_KM, ARBEI, PRIORITY, LAST_DONE, LAST_KM` |
+| Work orders  | IW39   | `orders.csv`     | `AUFNR, EQUNR, WARPL, KTEXT, AUART, STATUS, PRIORITY, GSTRP, GLTRP, ARBEI, PERNR` |
+| Technicians  | PA20   | `technicians.csv`| `PERNR, NAME, QUALIFICATION, SWERK, ACTIVE` |
 
-1. **Add a ticker** — the app records the current price as the baseline.
-2. **Every 60 seconds**, the backend fetches the latest price and computes the % change from the baseline.
-3. **If the change hits 1%**, a push notification is sent to your phone via ntfy.sh and the ticker is marked as "alerted".
-4. **After 8 hours**, the ticker automatically expires and is removed.
-5. **At midnight UTC**, all remaining tickers are cleared for the new day.
+SAP work-order status codes are mapped automatically:
+`CRTD → open`, `REL → scheduled`, `STRT → in_progress`, `TECO/CLSD → completed`.
 
-## Project Structure
+Sample CSVs are downloadable from the **SAP import** page in the UI.
+
+## Architecture
 
 ```
-app.py                 # Flask backend + scheduler
-templates/index.html   # Web dashboard (single-page app)
-requirements.txt       # Python dependencies
-stock_alerts.db        # SQLite database (auto-created)
+app.py             Flask routes, scheduling logic, app factory
+models.py          SQLAlchemy models
+sap_connector.py   CSV parsers + mock SAP data generator
+templates/         Jinja2 templates
+static/css/        Dark industrial theme
+sample_sap_data/   Auto-generated CSV samples
+maintenance.db     SQLite database (created on first run)
 ```
+
+A background job runs once an hour to auto-schedule overdue / due-soon
+plans that don't already have an open work order.
+
+## Replacing the mock connector with real SAP
+
+To point at a real SAP system, implement an OData client in
+`sap_connector.py` that yields the same dict rows as the CSV parsers and
+feed them into the existing `import_*` functions. All downstream logic
+(scheduling, KPIs, UI) will work unchanged.
+
+## License
+
+MIT

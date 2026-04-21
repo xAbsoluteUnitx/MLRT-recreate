@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}SAP import · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>SAP / PM data import</h1>
+</div>
+
+<div class="grid grid-2">
+  <div class="card">
+    <h2>Upload SAP flat-file export</h2>
+    <p class="small muted">
+      Export data from SAP (IH08 for equipment, IP15 for maintenance plans,
+      IW39 for work orders, PA20 for technicians) as a CSV file, then upload it
+      below. Column names follow the SAP field codes — see the sample files.
+    </p>
+    <form method="post" action="{{ url_for('sap_upload') }}" enctype="multipart/form-data">
+      <div class="form-row">
+        <div>
+          <label>Object type</label>
+          <select name="object_type" required>
+            {% for ot in object_types %}
+              <option value="{{ ot }}">{{ ot }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>CSV file</label>
+          <input type="file" name="file" accept=".csv,text/csv" required>
+        </div>
+        <div style="align-self: end;">
+          <button class="btn" type="submit">Upload</button>
+        </div>
+      </div>
+    </form>
+
+    <hr>
+    <h3>Download sample files</h3>
+    <div class="tag-row">
+      {% for ot in object_types %}
+        <a class="btn btn-secondary btn-small" href="{{ url_for('sap_sample', object_type=ot) }}">sample {{ ot }}.csv</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Live SAP pull (mock)</h2>
+    <p class="small muted">
+      Pretend we're hitting an SAP OData service
+      (<span class="mono">/API_EQUIPMENT_SRV</span>,
+      <span class="mono">/API_MAINT_PLAN_SRV</span>,
+      <span class="mono">/API_MAINTORDER_SRV</span>).
+      A realistic dataset will be generated and imported just like a real
+      pull — trains, plans, technicians, and work orders.
+    </p>
+    <form method="post" action="{{ url_for('sap_mock_pull') }}">
+      <div class="form-row">
+        <div>
+          <label>Number of trains</label>
+          <input type="number" name="num_trains" min="1" max="50" value="10">
+        </div>
+        <div style="align-self: end;">
+          <button class="btn" type="submit">Run mock pull now</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Import history</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>When</th><th>Source</th><th>Object</th>
+          <th class="right">Created</th><th class="right">Updated</th><th class="right">Skipped</th>
+          <th>Status</th><th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in logs %}
+        <tr>
+          <td class="small">{{ l.imported_at | dt }}</td>
+          <td>{{ l.source }}</td>
+          <td>{{ l.object_type }}</td>
+          <td class="right">{{ l.records_created }}</td>
+          <td class="right">{{ l.records_updated }}</td>
+          <td class="right">{{ l.records_skipped }}</td>
+          <td><span class="badge {{ 'badge-active' if l.status=='success' else 'badge-danger' }}">{{ l.status }}</span></td>
+          <td class="small muted">{{ l.message }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="muted">No imports yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

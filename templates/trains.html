@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Fleet · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Fleet ({{ trains|length }})</h1>
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('api_trains') }}">JSON</a>
+  </div>
+</div>
+
+<form method="get" class="card card-compact">
+  <div class="form-row">
+    <div>
+      <label>Search</label>
+      <input type="text" name="q" value="{{ q }}" placeholder="Equipment #, name, model…">
+    </div>
+    <div>
+      <label>Status</label>
+      <select name="status">
+        <option value="">— any —</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Depot</label>
+      <select name="depot">
+        <option value="">— any —</option>
+        {% for d in depots %}
+          <option value="{{ d }}" {% if depot == d %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="align-self: end;">
+      <button class="btn" type="submit">Filter</button>
+      <a class="btn btn-secondary" href="{{ url_for('trains_list') }}">Reset</a>
+    </div>
+  </div>
+</form>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Equipment #</th><th>Name</th><th>Model</th>
+        <th>Depot</th><th>Status</th><th>Mileage</th>
+        <th>Maintenance</th><th>Last SAP sync</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trains %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('train_detail', train_id=t.id) }}">{{ t.equipment_number }}</a></td>
+        <td>{{ t.name }}</td>
+        <td>{{ t.model or '—' }}</td>
+        <td>{{ t.depot or '—' }}</td>
+        <td><span class="badge {{ t.status | status_badge }}">{{ t.status | replace('_',' ') }}</span></td>
+        <td class="right">{{ t.current_mileage_km | km }}</td>
+        <td>
+          <span class="badge {{ worst[t.id] | status_badge }}">{{ worst[t.id] | replace('_',' ') }}</span>
+        </td>
+        <td class="small">{{ t.last_sap_sync | dt }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted">No trains match the filter.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Train Maintenance Planner{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">&#9981;</span> Rolling-Stock Maintenance</div>
+    <nav>
+      {% set p = request.path %}
+      <a href="{{ url_for('dashboard') }}"       class="{{ 'active' if p == '/' else '' }}">Dashboard</a>
+      <a href="{{ url_for('trains_list') }}"     class="{{ 'active' if p.startswith('/trains') else '' }}">Fleet</a>
+      <a href="{{ url_for('schedule') }}"        class="{{ 'active' if p.startswith('/schedule') else '' }}">Schedule</a>
+      <a href="{{ url_for('work_orders_list') }}" class="{{ 'active' if p.startswith('/work-orders') else '' }}">Work orders</a>
+      <a href="{{ url_for('sap_import_page') }}" class="{{ 'active' if p.startswith('/sap') else '' }}">SAP import</a>
+    </nav>
+    <div class="env">v1.0 · connected to SAP/PM (mock)</div>
+  </header>
+
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, msg in messages %}
+        <div class="alert alert-{{ category if category in ['success','error','info'] else 'info' }}">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

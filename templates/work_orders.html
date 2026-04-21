@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Work orders · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Work orders ({{ orders|length }})</h1>
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('export_work_orders') }}">Export CSV</a>
+    <a class="btn" href="{{ url_for('work_order_new') }}">+ New</a>
+  </div>
+</div>
+
+<form method="get" class="card card-compact">
+  <div class="form-row">
+    <div>
+      <label>Status</label>
+      <select name="status">
+        <option value="">— any —</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s | replace('_',' ') }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Priority</label>
+      <select name="priority">
+        <option value="">— any —</option>
+        {% for p in priorities %}
+          <option value="{{ p }}" {% if priority == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Train</label>
+      <select name="train_id">
+        <option value="">— any —</option>
+        {% for t in trains %}
+          <option value="{{ t.id }}" {% if train_id == t.id|string %}selected{% endif %}>{{ t.equipment_number }} — {{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="align-self: end;">
+      <button class="btn" type="submit">Filter</button>
+      <a class="btn btn-secondary" href="{{ url_for('work_orders_list') }}">Reset</a>
+    </div>
+  </div>
+</form>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Order</th><th>Train</th><th>Description</th><th>Type</th>
+        <th>Scheduled</th><th>Technician</th><th>Hours</th>
+        <th>Priority</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in orders %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('work_order_detail', order_id=o.id) }}">{{ o.order_number }}</a></td>
+        <td><a href="{{ url_for('train_detail', train_id=o.train.id) }}">{{ o.train.equipment_number }}</a></td>
+        <td>{{ o.description }}</td>
+        <td>{{ o.order_type }}</td>
+        <td class="small">
+          {{ o.scheduled_start | dt }}
+          {% if o.is_overdue %} <span class="badge badge-danger">overdue</span>{% endif %}
+        </td>
+        <td>{{ o.technician.name if o.technician else '—' }}</td>
+        <td class="right small">
+          est. {{ o.estimated_hours | hours }}<br>
+          act. {{ o.actual_hours | hours }}
+        </td>
+        <td>{{ o.priority }}</td>
+        <td><span class="badge {{ o.status | status_badge }}">{{ o.status | replace('_',' ') }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">No work orders match the filter.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

@@ -1,0 +1,9 @@
+PERNR,NAME,QUALIFICATION,SWERK,ACTIVE
+10001001,Klaus Müller,brakes & bogies,Frankfurt HBF,true
+10001002,Ingrid Bauer,traction electrics,Nuremberg HBF,true
+10001003,Jan Novak,HVAC,Hamburg HBF,true
+10001004,Sofia Rossi,doors & pneumatics,Berlin HBF,true
+10001005,Peter Johansson,wheelsets,Nuremberg HBF,true
+10001006,Anne Dupont,diagnostics,Hamburg HBF,true
+10001007,Marek Kowalski,general mechanic,Nuremberg HBF,true
+10001008,Helena Schmidt,electrician,Munich HBF,true

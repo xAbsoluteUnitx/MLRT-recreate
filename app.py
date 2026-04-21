@@ -1,280 +1,636 @@
-import os
-import csv
-import io
-import json
-import sqlite3
-from datetime import datetime, timedelta
+"""Train maintenance planning tool.
 
-import requests
-import yfinance as yf
-from flask import Flask, jsonify, render_template, request, Response
+A Flask web application that plans, schedules and tracks rolling-stock
+maintenance for a train operator. Data can be imported from SAP (IH08 /
+IP15 / IW39 flat-file exports) or pulled from the built-in mock SAP
+connector for demos.
+
+Run:
+    pip install -r requirements.txt
+    python app.py
+
+Then open http://localhost:5000.
+"""
+import os
+from datetime import datetime, timedelta, date
+
+from flask import (
+    Flask, render_template, request, redirect, url_for, jsonify, flash,
+    send_from_directory, Response, abort,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = Flask(__name__)
-DB_PATH = os.path.join(os.path.dirname(__file__), "stock_alerts.db")
-
-# ---------------------------------------------------------------------------
-# ntfy.sh configuration
-#   1. Install the ntfy app on your iPhone from the App Store.
-#   2. Subscribe to a unique topic (e.g. "my-stock-alerts-xyz123").
-#   3. Set that same topic name here or via the NTFY_TOPIC env var.
-# ---------------------------------------------------------------------------
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "my-stock-alerts-change-me")
-NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
-ALERT_THRESHOLD_PCT = float(os.environ.get("ALERT_THRESHOLD_PCT", "1.0"))
-CHECK_INTERVAL_SEC = int(os.environ.get("CHECK_INTERVAL_SEC", "60"))
+from models import (
+    db,
+    Train, MaintenancePlan, WorkOrder, Technician, SapImportLog,
+    TRAIN_STATUSES, ORDER_STATUSES, PRIORITIES, TASK_TYPES,
+)
+import sap_connector
 
 
-# ---------------------------------------------------------------------------
-# Database helpers
-# ---------------------------------------------------------------------------
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+BASE_DIR = os.path.dirname(__file__)
+DB_PATH = os.path.join(BASE_DIR, "maintenance.db")
 
 
-def init_db():
-    conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS tickers (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol      TEXT    NOT NULL,
-            base_price  REAL,
-            last_price  REAL,
-            change_pct  REAL    DEFAULT 0,
-            added_at    TEXT    NOT NULL,
-            expires_at  TEXT    NOT NULL,
-            alerted     INTEGER DEFAULT 0
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS alert_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol      TEXT    NOT NULL,
-            base_price  REAL,
-            alert_price REAL,
-            change_pct  REAL,
-            alerted_at  TEXT    NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+def create_app() -> Flask:
+    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-train-planner")
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload cap
+
+    db.init_app(app)
+
+    with app.app_context():
+        db.create_all()
+        sap_connector.ensure_sample_files()
+        if Train.query.count() == 0:
+            # First start — load the sample dataset so the UI is immediately useful.
+            sap_connector.run_mock_pull(num_trains=10)
+
+    _register_routes(app)
+    _register_template_filters(app)
+    return app
 
 
 # ---------------------------------------------------------------------------
-# Push notification via ntfy.sh
+# Maintenance scheduling logic
 # ---------------------------------------------------------------------------
-def send_push(title: str, message: str, priority: str = "high"):
-    try:
-        requests.post(
-            NTFY_URL,
-            data=message.encode("utf-8"),
-            headers={
-                "Title": title,
-                "Priority": priority,
-                "Tags": "chart_with_upwards_trend",
-            },
-            timeout=10,
-        )
-    except Exception as e:
-        print(f"[ntfy] Failed to send notification: {e}")
+def plans_with_status(train: Train):
+    """Return a list of (plan, status, next_due_date, next_due_km) tuples."""
+    result = []
+    for plan in train.plans:
+        st = plan.status(train.current_mileage_km or 0)
+        result.append({
+            "plan": plan,
+            "status": st,
+            "next_due_date": plan.next_due_date(),
+            "next_due_km": plan.next_due_km(),
+        })
+    return result
 
 
-# ---------------------------------------------------------------------------
-# Price fetching
-# ---------------------------------------------------------------------------
-def fetch_price(symbol: str):
-    """Return the latest price for *symbol* using yfinance."""
-    try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1d", interval="1m")
-        if data.empty:
-            return None
-        return round(float(data["Close"].iloc[-1]), 4)
-    except Exception as e:
-        print(f"[price] Error fetching {symbol}: {e}")
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Scheduled jobs
-# ---------------------------------------------------------------------------
-def check_prices():
-    """Runs every CHECK_INTERVAL_SEC seconds. Checks all active tickers."""
-    now = datetime.utcnow()
-    conn = get_db()
-
-    # Remove expired tickers (older than 8 hours)
-    conn.execute("DELETE FROM tickers WHERE expires_at <= ?", (now.isoformat(),))
-    conn.commit()
-
-    rows = conn.execute("SELECT * FROM tickers").fetchall()
-    for row in rows:
-        symbol = row["symbol"]
-        base_price = row["base_price"]
-        if base_price is None or base_price == 0:
+def upcoming_maintenance(days_ahead: int = 30):
+    """Return plans that are overdue or due within the horizon, worst first."""
+    today = date.today()
+    horizon = today + timedelta(days=days_ahead)
+    items = []
+    for plan in MaintenancePlan.query.filter_by(active=True).all():
+        train = plan.train
+        if not train or train.status == "retired":
             continue
-
-        price = fetch_price(symbol)
-        if price is None:
+        status = plan.status(train.current_mileage_km or 0, today)
+        if status == "ok":
             continue
+        due_date = plan.next_due_date()
+        due_km = plan.next_due_km()
+        if status == "due_soon" and due_date and due_date > horizon:
+            continue
+        items.append({
+            "plan": plan,
+            "train": train,
+            "status": status,
+            "next_due_date": due_date,
+            "next_due_km": due_km,
+            "km_to_go": (due_km - (train.current_mileage_km or 0)) if due_km else None,
+            "days_to_go": (due_date - today).days if due_date else None,
+        })
 
-        change_pct = round(((price - base_price) / base_price) * 100, 4)
-
-        conn.execute(
-            "UPDATE tickers SET last_price = ?, change_pct = ? WHERE id = ?",
-            (price, change_pct, row["id"]),
+    def sort_key(item):
+        return (
+            0 if item["status"] == "overdue" else 1,
+            item["days_to_go"] if item["days_to_go"] is not None else 999,
+            item["km_to_go"] if item["km_to_go"] is not None else 10_000_000,
         )
 
-        if abs(change_pct) >= ALERT_THRESHOLD_PCT and not row["alerted"]:
-            direction = "UP" if change_pct > 0 else "DOWN"
-            title = f"🚨 {symbol} {direction} {abs(change_pct):.2f}%"
-            body = (
-                f"{symbol} moved {direction} {abs(change_pct):.2f}%\n"
-                f"Base: ${base_price:.2f}  →  Now: ${price:.2f}"
-            )
-            send_push(title, body)
-
-            conn.execute("UPDATE tickers SET alerted = 1 WHERE id = ?", (row["id"],))
-            conn.execute(
-                "INSERT INTO alert_log (symbol, base_price, alert_price, change_pct, alerted_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (symbol, base_price, price, change_pct, now.isoformat()),
-            )
-
-    conn.commit()
-    conn.close()
+    items.sort(key=sort_key)
+    return items
 
 
-def daily_cleanup():
-    """Delete all tickers once per day at midnight UTC."""
-    conn = get_db()
-    conn.execute("DELETE FROM tickers")
-    conn.commit()
-    conn.close()
-    print("[cleanup] All tickers cleared for the new day.")
+def generate_work_order_from_plan(plan: MaintenancePlan, scheduled_start: datetime,
+                                  technician_id: int | None = None) -> WorkOrder:
+    last_number = db.session.query(db.func.max(WorkOrder.id)).scalar() or 0
+    order_number = f"WO-{1_100_000 + last_number + 1}"
+    scheduled_end = scheduled_start + timedelta(hours=plan.duration_hours or 4)
+    order = WorkOrder(
+        order_number=order_number,
+        train_id=plan.train_id,
+        plan_id=plan.id,
+        technician_id=technician_id,
+        description=f"{plan.description} (from plan {plan.plan_number})",
+        order_type="PM01" if plan.task_type != "corrective" else "PM02",
+        status="scheduled",
+        priority=plan.priority,
+        scheduled_start=scheduled_start,
+        scheduled_end=scheduled_end,
+        estimated_hours=plan.duration_hours or 4,
+    )
+    db.session.add(order)
+    db.session.commit()
+    return order
+
+
+def auto_schedule_due_work(horizon_days: int = 14) -> list[WorkOrder]:
+    """Create scheduled work orders for every overdue/due-soon plan that
+    doesn't already have an open work order."""
+    created = []
+    for item in upcoming_maintenance(days_ahead=horizon_days):
+        plan = item["plan"]
+        existing = WorkOrder.query.filter(
+            WorkOrder.plan_id == plan.id,
+            WorkOrder.status.in_(("open", "scheduled", "in_progress")),
+        ).first()
+        if existing:
+            continue
+        # Schedule it on the earlier of (due date) or (today + 2 days).
+        start_date = item["next_due_date"] or (date.today() + timedelta(days=2))
+        if start_date < date.today():
+            start_date = date.today() + timedelta(days=1)
+        scheduled_start = datetime.combine(start_date, datetime.min.time().replace(hour=8))
+        created.append(generate_work_order_from_plan(plan, scheduled_start))
+    return created
 
 
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
-@app.route("/")
-def index():
-    return render_template("index.html", ntfy_topic=NTFY_TOPIC)
+def _register_routes(app: Flask):
 
+    # --------- Dashboard ----------------------------------------------------
+    @app.route("/")
+    def dashboard():
+        today = date.today()
+        fleet_total = Train.query.count()
+        active_count = Train.query.filter_by(status="active").count()
+        in_workshop = Train.query.filter_by(status="in_workshop").count()
+        standby = Train.query.filter_by(status="standby").count()
 
-@app.route("/api/tickers", methods=["GET"])
-def list_tickers():
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM tickers ORDER BY added_at DESC"
-    ).fetchall()
-    conn.close()
-    tickers = [dict(r) for r in rows]
-    return jsonify(tickers)
+        open_orders = WorkOrder.query.filter(
+            WorkOrder.status.in_(("open", "scheduled", "in_progress"))
+        ).count()
+        overdue_orders = [o for o in WorkOrder.query.filter(
+            WorkOrder.status.in_(("open", "scheduled", "in_progress"))
+        ).all() if o.is_overdue]
 
+        month_start = datetime(today.year, today.month, 1)
+        completed_this_month = WorkOrder.query.filter(
+            WorkOrder.status == "completed",
+            WorkOrder.actual_end >= month_start,
+        ).count()
 
-@app.route("/api/tickers", methods=["POST"])
-def add_ticker():
-    data = request.get_json(force=True)
-    symbol = data.get("symbol", "").strip().upper()
-    if not symbol:
-        return jsonify({"error": "Symbol is required"}), 400
+        upcoming = upcoming_maintenance(days_ahead=30)
+        upcoming_overdue = [u for u in upcoming if u["status"] == "overdue"]
+        upcoming_due_soon = [u for u in upcoming if u["status"] == "due_soon"]
 
-    # Check for duplicates
-    conn = get_db()
-    existing = conn.execute(
-        "SELECT id FROM tickers WHERE symbol = ?", (symbol,)
-    ).fetchone()
-    if existing:
-        conn.close()
-        return jsonify({"error": f"{symbol} is already being monitored"}), 409
+        recent_orders = WorkOrder.query.order_by(WorkOrder.created_at.desc()).limit(8).all()
 
-    price = fetch_price(symbol)
-    if price is None:
-        conn.close()
-        return jsonify({"error": f"Could not fetch price for {symbol}. Invalid ticker?"}), 400
+        return render_template(
+            "dashboard.html",
+            fleet_total=fleet_total,
+            active_count=active_count,
+            in_workshop=in_workshop,
+            standby=standby,
+            open_orders=open_orders,
+            overdue_count=len(overdue_orders),
+            completed_this_month=completed_this_month,
+            upcoming_overdue=upcoming_overdue[:10],
+            upcoming_due_soon=upcoming_due_soon[:10],
+            recent_orders=recent_orders,
+        )
 
-    now = datetime.utcnow()
-    expires = now + timedelta(hours=8)
+    # --------- Fleet -------------------------------------------------------
+    @app.route("/trains")
+    def trains_list():
+        q = request.args.get("q", "").strip()
+        status = request.args.get("status", "").strip()
+        depot = request.args.get("depot", "").strip()
 
-    conn.execute(
-        "INSERT INTO tickers (symbol, base_price, last_price, change_pct, added_at, expires_at) "
-        "VALUES (?, ?, ?, 0, ?, ?)",
-        (symbol, price, price, now.isoformat(), expires.isoformat()),
-    )
-    conn.commit()
-    conn.close()
+        query = Train.query
+        if q:
+            like = f"%{q}%"
+            query = query.filter(db.or_(
+                Train.equipment_number.ilike(like),
+                Train.name.ilike(like),
+                Train.model.ilike(like),
+            ))
+        if status:
+            query = query.filter_by(status=status)
+        if depot:
+            query = query.filter_by(depot=depot)
 
-    return jsonify({"symbol": symbol, "base_price": price, "expires_at": expires.isoformat()}), 201
+        trains = query.order_by(Train.equipment_number).all()
+        depots = sorted({t.depot for t in Train.query.all() if t.depot})
+        # Overlay the worst plan status per train so the list shows it.
+        worst = {}
+        for t in trains:
+            statuses = [p.status(t.current_mileage_km or 0) for p in t.plans]
+            if "overdue" in statuses:
+                worst[t.id] = "overdue"
+            elif "due_soon" in statuses:
+                worst[t.id] = "due_soon"
+            else:
+                worst[t.id] = "ok"
 
+        return render_template(
+            "trains.html",
+            trains=trains,
+            worst=worst,
+            depots=depots,
+            q=q, status=status, depot=depot,
+            statuses=TRAIN_STATUSES,
+        )
 
-@app.route("/api/tickers/<symbol>", methods=["DELETE"])
-def delete_ticker(symbol):
-    symbol = symbol.upper()
-    conn = get_db()
-    conn.execute("DELETE FROM tickers WHERE symbol = ?", (symbol,))
-    conn.commit()
-    conn.close()
-    return jsonify({"deleted": symbol})
+    @app.route("/trains/<int:train_id>")
+    def train_detail(train_id):
+        train = Train.query.get_or_404(train_id)
+        plan_statuses = plans_with_status(train)
+        orders = WorkOrder.query.filter_by(train_id=train.id)\
+            .order_by(WorkOrder.scheduled_start.desc().nullslast()).all()
+        return render_template(
+            "train_detail.html",
+            train=train,
+            plan_statuses=plan_statuses,
+            orders=orders,
+            technicians=Technician.query.filter_by(active=True).order_by(Technician.name).all(),
+            now=datetime.utcnow(),
+        )
 
+    @app.route("/trains/<int:train_id>/mileage", methods=["POST"])
+    def update_mileage(train_id):
+        train = Train.query.get_or_404(train_id)
+        try:
+            new_km = int(request.form["mileage"])
+            if new_km < 0 or new_km < (train.current_mileage_km or 0):
+                raise ValueError("Mileage can't decrease.")
+        except (KeyError, ValueError) as e:
+            flash(f"Invalid mileage: {e}", "error")
+            return redirect(url_for("train_detail", train_id=train.id))
+        train.current_mileage_km = new_km
+        db.session.commit()
+        flash(f"Mileage updated to {new_km:,} km.", "success")
+        return redirect(url_for("train_detail", train_id=train.id))
 
-@app.route("/api/tickers/clear", methods=["POST"])
-def clear_tickers():
-    conn = get_db()
-    conn.execute("DELETE FROM tickers")
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "all tickers cleared"})
+    @app.route("/trains/<int:train_id>/status", methods=["POST"])
+    def update_train_status(train_id):
+        train = Train.query.get_or_404(train_id)
+        status = request.form.get("status", "").strip()
+        if status in TRAIN_STATUSES:
+            train.status = status
+            db.session.commit()
+            flash(f"Status updated to {status}.", "success")
+        return redirect(url_for("train_detail", train_id=train.id))
 
+    # --------- Plans / auto-schedule ---------------------------------------
+    @app.route("/plans/<int:plan_id>/schedule", methods=["POST"])
+    def schedule_plan(plan_id):
+        plan = MaintenancePlan.query.get_or_404(plan_id)
+        when_str = request.form.get("when")
+        try:
+            scheduled_start = datetime.fromisoformat(when_str) if when_str else (
+                datetime.combine(date.today() + timedelta(days=2),
+                                 datetime.min.time().replace(hour=8)))
+        except ValueError:
+            flash("Invalid date.", "error")
+            return redirect(url_for("train_detail", train_id=plan.train_id))
+        tech_id = request.form.get("technician_id") or None
+        tech_id = int(tech_id) if tech_id else None
+        order = generate_work_order_from_plan(plan, scheduled_start, tech_id)
+        flash(f"Work order {order.order_number} scheduled.", "success")
+        return redirect(url_for("work_order_detail", order_id=order.id))
 
-@app.route("/api/export")
-def export_csv():
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM tickers ORDER BY symbol").fetchall()
-    conn.close()
+    @app.route("/plans/auto-schedule", methods=["POST"])
+    def auto_schedule():
+        created = auto_schedule_due_work(
+            horizon_days=int(request.form.get("horizon", "14")))
+        flash(f"Created {len(created)} work order(s) from due/overdue plans.", "success")
+        return redirect(url_for("work_orders_list"))
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Symbol", "Base Price", "Last Price", "Change %", "Added (UTC)", "Expires (UTC)", "Alerted"])
-    for r in rows:
-        writer.writerow([
-            r["symbol"],
-            r["base_price"],
-            r["last_price"],
-            r["change_pct"],
-            r["added_at"],
-            r["expires_at"],
-            "Yes" if r["alerted"] else "No",
+    # --------- Work orders --------------------------------------------------
+    @app.route("/work-orders")
+    def work_orders_list():
+        status = request.args.get("status", "").strip()
+        priority = request.args.get("priority", "").strip()
+        train_id = request.args.get("train_id", "").strip()
+
+        query = WorkOrder.query
+        if status:
+            query = query.filter_by(status=status)
+        if priority:
+            query = query.filter_by(priority=priority)
+        if train_id:
+            query = query.filter_by(train_id=int(train_id))
+        orders = query.order_by(WorkOrder.scheduled_start.asc().nullslast()).all()
+        trains = Train.query.order_by(Train.equipment_number).all()
+        return render_template(
+            "work_orders.html",
+            orders=orders,
+            trains=trains,
+            statuses=ORDER_STATUSES,
+            priorities=PRIORITIES,
+            status=status, priority=priority, train_id=train_id,
+            now=datetime.utcnow(),
+        )
+
+    @app.route("/work-orders/new", methods=["GET", "POST"])
+    def work_order_new():
+        if request.method == "POST":
+            form = request.form
+            train_id = int(form["train_id"])
+            plan_id = int(form["plan_id"]) if form.get("plan_id") else None
+            tech_id = int(form["technician_id"]) if form.get("technician_id") else None
+            try:
+                start = datetime.fromisoformat(form["scheduled_start"])
+                end = datetime.fromisoformat(form["scheduled_end"]) if form.get("scheduled_end") else start + timedelta(hours=4)
+            except ValueError:
+                flash("Invalid start/end date-time.", "error")
+                return redirect(url_for("work_order_new"))
+
+            last_id = db.session.query(db.func.max(WorkOrder.id)).scalar() or 0
+            order = WorkOrder(
+                order_number=form.get("order_number") or f"WO-{1_100_000 + last_id + 1}",
+                train_id=train_id,
+                plan_id=plan_id,
+                technician_id=tech_id,
+                description=form["description"],
+                order_type=form.get("order_type") or "PM01",
+                status=form.get("status") or "scheduled",
+                priority=form.get("priority") or "3-normal",
+                scheduled_start=start,
+                scheduled_end=end,
+                estimated_hours=float(form.get("estimated_hours") or 4),
+            )
+            db.session.add(order)
+            db.session.commit()
+            flash(f"Work order {order.order_number} created.", "success")
+            return redirect(url_for("work_order_detail", order_id=order.id))
+
+        return render_template(
+            "work_order_form.html",
+            trains=Train.query.order_by(Train.equipment_number).all(),
+            plans=MaintenancePlan.query.all(),
+            technicians=Technician.query.filter_by(active=True).order_by(Technician.name).all(),
+            statuses=ORDER_STATUSES,
+            priorities=PRIORITIES,
+        )
+
+    @app.route("/work-orders/<int:order_id>")
+    def work_order_detail(order_id):
+        order = WorkOrder.query.get_or_404(order_id)
+        return render_template(
+            "work_order_detail.html",
+            order=order,
+            technicians=Technician.query.filter_by(active=True).order_by(Technician.name).all(),
+            statuses=ORDER_STATUSES,
+            priorities=PRIORITIES,
+            now=datetime.utcnow(),
+        )
+
+    @app.route("/work-orders/<int:order_id>/update", methods=["POST"])
+    def work_order_update(order_id):
+        order = WorkOrder.query.get_or_404(order_id)
+        form = request.form
+        new_status = form.get("status")
+        if new_status and new_status in ORDER_STATUSES:
+            order.status = new_status
+            if new_status == "in_progress" and not order.actual_start:
+                order.actual_start = datetime.utcnow()
+            if new_status == "completed":
+                order.actual_end = datetime.utcnow()
+                try:
+                    order.actual_hours = float(form.get("actual_hours") or order.estimated_hours)
+                except ValueError:
+                    pass
+                # Mark the plan as performed and bump the train's mileage bookkeeping.
+                if order.plan:
+                    order.plan.last_performed_on = date.today()
+                    if order.train:
+                        order.plan.last_performed_km = order.train.current_mileage_km or 0
+        if form.get("technician_id"):
+            order.technician_id = int(form["technician_id"])
+        if form.get("priority") in PRIORITIES:
+            order.priority = form["priority"]
+        if form.get("completion_notes") is not None:
+            order.completion_notes = form["completion_notes"]
+        db.session.commit()
+        flash(f"Work order {order.order_number} updated.", "success")
+        return redirect(url_for("work_order_detail", order_id=order.id))
+
+    @app.route("/work-orders/<int:order_id>/delete", methods=["POST"])
+    def work_order_delete(order_id):
+        order = WorkOrder.query.get_or_404(order_id)
+        db.session.delete(order)
+        db.session.commit()
+        flash(f"Work order {order.order_number} deleted.", "success")
+        return redirect(url_for("work_orders_list"))
+
+    # --------- Schedule view -----------------------------------------------
+    @app.route("/schedule")
+    def schedule():
+        # Show a 4-week window starting from 1 week before today
+        start = date.today() - timedelta(days=date.today().weekday() + 7)
+        end = start + timedelta(days=42)
+        orders = WorkOrder.query.filter(
+            WorkOrder.scheduled_start != None,  # noqa: E711
+            WorkOrder.scheduled_start >= datetime.combine(start, datetime.min.time()),
+            WorkOrder.scheduled_start < datetime.combine(end, datetime.min.time()),
+        ).order_by(WorkOrder.scheduled_start).all()
+
+        # Build calendar structure: list of weeks, each with 7 days.
+        weeks = []
+        d = start
+        while d < end:
+            week = []
+            for _ in range(7):
+                day_orders = [o for o in orders
+                              if o.scheduled_start and o.scheduled_start.date() == d]
+                week.append({"date": d, "orders": day_orders})
+                d += timedelta(days=1)
+            weeks.append(week)
+
+        return render_template(
+            "schedule.html",
+            weeks=weeks,
+            range_start=start,
+            range_end=end - timedelta(days=1),
+            today=date.today(),
+        )
+
+    # --------- SAP import --------------------------------------------------
+    @app.route("/sap")
+    def sap_import_page():
+        logs = SapImportLog.query.order_by(SapImportLog.imported_at.desc()).limit(30).all()
+        return render_template(
+            "sap_import.html",
+            logs=logs,
+            object_types=list(sap_connector.IMPORTERS.keys()),
+        )
+
+    @app.route("/sap/upload", methods=["POST"])
+    def sap_upload():
+        object_type = request.form.get("object_type")
+        if object_type not in sap_connector.IMPORTERS:
+            flash("Unknown SAP object type.", "error")
+            return redirect(url_for("sap_import_page"))
+        file = request.files.get("file")
+        if not file or not file.filename:
+            flash("Please pick a CSV file.", "error")
+            return redirect(url_for("sap_import_page"))
+        log = sap_connector.IMPORTERS[object_type](file)
+        level = "success" if log.status == "success" else "error"
+        flash(f"{object_type}: {log.message}", level)
+        return redirect(url_for("sap_import_page"))
+
+    @app.route("/sap/mock-pull", methods=["POST"])
+    def sap_mock_pull():
+        try:
+            n = int(request.form.get("num_trains", "10"))
+        except ValueError:
+            n = 10
+        n = max(1, min(n, 50))
+        logs = sap_connector.run_mock_pull(num_trains=n)
+        created = sum(l.records_created for l in logs)
+        updated = sum(l.records_updated for l in logs)
+        flash(f"Mock SAP pull complete — {created} new, {updated} updated records.",
+              "success")
+        return redirect(url_for("sap_import_page"))
+
+    @app.route("/sap/sample/<object_type>")
+    def sap_sample(object_type):
+        if object_type not in sap_connector.IMPORTERS:
+            abort(404)
+        paths = sap_connector.ensure_sample_files()
+        directory, filename = os.path.split(paths[object_type])
+        return send_from_directory(directory, filename, as_attachment=True)
+
+    # --------- JSON APIs ----------------------------------------------------
+    @app.route("/api/trains")
+    def api_trains():
+        return jsonify([t.to_dict() for t in Train.query.all()])
+
+    @app.route("/api/work-orders")
+    def api_work_orders():
+        return jsonify([o.to_dict() for o in WorkOrder.query.all()])
+
+    @app.route("/api/plans")
+    def api_plans():
+        return jsonify([p.to_dict() for p in MaintenancePlan.query.all()])
+
+    @app.route("/api/upcoming")
+    def api_upcoming():
+        items = upcoming_maintenance(
+            days_ahead=int(request.args.get("days", "30")))
+        return jsonify([
+            {
+                "plan_number": i["plan"].plan_number,
+                "description": i["plan"].description,
+                "train": i["train"].equipment_number,
+                "status": i["status"],
+                "next_due_date": i["next_due_date"].isoformat() if i["next_due_date"] else None,
+                "next_due_km": i["next_due_km"],
+                "days_to_go": i["days_to_go"],
+                "km_to_go": i["km_to_go"],
+            }
+            for i in items
         ])
 
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=stock_alerts.csv"},
-    )
-
-
-@app.route("/api/alerts")
-def alert_history():
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM alert_log ORDER BY alerted_at DESC LIMIT 50"
-    ).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
+    # --------- CSV export --------------------------------------------------
+    @app.route("/export/work-orders.csv")
+    def export_work_orders():
+        import csv, io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "Order", "Train", "Description", "Type", "Status", "Priority",
+            "Scheduled start", "Scheduled end", "Technician",
+            "Estimated h", "Actual h",
+        ])
+        for o in WorkOrder.query.order_by(WorkOrder.scheduled_start.asc().nullslast()).all():
+            writer.writerow([
+                o.order_number,
+                o.train.equipment_number if o.train else "",
+                o.description,
+                o.order_type,
+                o.status,
+                o.priority,
+                o.scheduled_start.isoformat() if o.scheduled_start else "",
+                o.scheduled_end.isoformat() if o.scheduled_end else "",
+                o.technician.name if o.technician else "",
+                o.estimated_hours or 0,
+                o.actual_hours or 0,
+            ])
+        return Response(buf.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition":
+                                 "attachment; filename=work_orders.csv"})
 
 
 # ---------------------------------------------------------------------------
-# App startup
+# Template filters
 # ---------------------------------------------------------------------------
-init_db()
+def _register_template_filters(app: Flask):
+    @app.template_filter("dt")
+    def fmt_dt(value):
+        if not value:
+            return "—"
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M")
+        return value.strftime("%Y-%m-%d")
 
-scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(check_prices, "interval", seconds=CHECK_INTERVAL_SEC, id="price_checker")
-scheduler.add_job(daily_cleanup, "cron", hour=0, minute=0, id="daily_cleanup")
-scheduler.start()
+    @app.template_filter("d")
+    def fmt_d(value):
+        if not value:
+            return "—"
+        if isinstance(value, datetime):
+            value = value.date()
+        return value.strftime("%Y-%m-%d")
+
+    @app.template_filter("km")
+    def fmt_km(value):
+        if value is None:
+            return "—"
+        return f"{int(value):,} km"
+
+    @app.template_filter("hours")
+    def fmt_hours(value):
+        if value is None:
+            return "—"
+        return f"{float(value):.1f} h"
+
+    @app.template_filter("status_badge")
+    def status_badge(value):
+        return {
+            "active": "badge-active",
+            "in_workshop": "badge-warning",
+            "standby": "badge-standby",
+            "retired": "badge-muted",
+            "open": "badge-muted",
+            "scheduled": "badge-standby",
+            "in_progress": "badge-warning",
+            "completed": "badge-active",
+            "cancelled": "badge-muted",
+            "overdue": "badge-danger",
+            "due_soon": "badge-warning",
+            "ok": "badge-active",
+        }.get(value, "badge-muted")
+
+
+# ---------------------------------------------------------------------------
+# Background scheduler — keeps derived state up to date
+# ---------------------------------------------------------------------------
+def start_scheduler(app: Flask):
+    scheduler = BackgroundScheduler(daemon=True)
+
+    def hourly_auto_schedule():
+        with app.app_context():
+            auto_schedule_due_work(horizon_days=14)
+
+    scheduler.add_job(hourly_auto_schedule, "interval", hours=1, id="auto_schedule")
+    scheduler.start()
+    return scheduler
+
+
+app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    start_scheduler(app)
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)

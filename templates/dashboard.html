@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Operations Dashboard</h1>
+  <div class="actions">
+    <form method="post" action="{{ url_for('auto_schedule') }}" class="inline">
+      <input type="hidden" name="horizon" value="14">
+      <button class="btn btn-secondary" type="submit">Auto-schedule due plans (14 d)</button>
+    </form>
+    <a class="btn" href="{{ url_for('work_order_new') }}">+ New work order</a>
+  </div>
+</div>
+
+<div class="grid grid-4">
+  <div class="kpi success">
+    <div class="label">Fleet size</div>
+    <div class="value">{{ fleet_total }}</div>
+    <div class="sub">{{ active_count }} active · {{ in_workshop }} in workshop · {{ standby }} standby</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Open work orders</div>
+    <div class="value">{{ open_orders }}</div>
+    <div class="sub">across the fleet</div>
+  </div>
+  <div class="kpi danger">
+    <div class="label">Overdue</div>
+    <div class="value">{{ overdue_count }}</div>
+    <div class="sub">missed scheduled end date</div>
+  </div>
+  <div class="kpi success">
+    <div class="label">Completed this month</div>
+    <div class="value">{{ completed_this_month }}</div>
+    <div class="sub">actual end in current month</div>
+  </div>
+</div>
+
+<div class="grid grid-2" style="margin-top: 16px;">
+  <div class="card">
+    <h2>Overdue maintenance</h2>
+    {% if upcoming_overdue %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Train</th><th>Plan</th><th>Due</th><th>Delay</th></tr>
+        </thead>
+        <tbody>
+          {% for u in upcoming_overdue %}
+          <tr>
+            <td><a href="{{ url_for('train_detail', train_id=u.train.id) }}">{{ u.train.equipment_number }}</a></td>
+            <td>{{ u.plan.description }}</td>
+            <td>
+              {% if u.next_due_date %}{{ u.next_due_date | d }}{% endif %}
+              {% if u.next_due_km %}<br><span class="small">{{ u.next_due_km | km }}</span>{% endif %}
+            </td>
+            <td>
+              <span class="badge badge-danger">
+                {% if u.days_to_go is not none and u.days_to_go < 0 %}{{ -u.days_to_go }} d{% endif %}
+                {% if u.km_to_go is not none and u.km_to_go <= 0 %} / {{ -u.km_to_go }} km{% endif %}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">No overdue plans. Good job.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Due in the next 30 days</h2>
+    {% if upcoming_due_soon %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Train</th><th>Plan</th><th>Next due</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for u in upcoming_due_soon %}
+          <tr>
+            <td><a href="{{ url_for('train_detail', train_id=u.train.id) }}">{{ u.train.equipment_number }}</a></td>
+            <td>{{ u.plan.description }}</td>
+            <td>
+              {% if u.next_due_date %}{{ u.next_due_date | d }}{% endif %}
+              {% if u.next_due_km %}<br><span class="small">{{ u.next_due_km | km }}</span>{% endif %}
+            </td>
+            <td>
+              <form method="post" action="{{ url_for('schedule_plan', plan_id=u.plan.id) }}" class="inline">
+                <button class="btn btn-small btn-secondary" type="submit">Schedule</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">Nothing due in the next 30 days.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2>Recent work orders</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th><th>Train</th><th>Description</th>
+          <th>Scheduled</th><th>Status</th><th>Priority</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in recent_orders %}
+        <tr>
+          <td class="mono"><a href="{{ url_for('work_order_detail', order_id=o.id) }}">{{ o.order_number }}</a></td>
+          <td><a href="{{ url_for('train_detail', train_id=o.train.id) }}">{{ o.train.equipment_number }}</a></td>
+          <td>{{ o.description }}</td>
+          <td>{{ o.scheduled_start | dt }}</td>
+          <td><span class="badge {{ o.status | status_badge }}">{{ o.status | replace('_', ' ') }}</span></td>
+          <td>{{ o.priority }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="muted">No work orders yet — import from SAP or create one.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

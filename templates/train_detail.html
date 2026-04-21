@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ train.equipment_number }} · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>{{ train.equipment_number }} — {{ train.name }}</h1>
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('trains_list') }}">&larr; Fleet</a>
+    <a class="btn" href="{{ url_for('work_order_new') }}?train_id={{ train.id }}">+ Work order</a>
+  </div>
+</div>
+
+<div class="grid grid-2">
+  <div class="card">
+    <h2>Equipment master</h2>
+    <dl class="kv">
+      <dt>SAP EQUNR</dt>            <dd class="mono">{{ train.equipment_number }}</dd>
+      <dt>Model (TYPBZ)</dt>        <dd>{{ train.model or '—' }}</dd>
+      <dt>Year built</dt>           <dd>{{ train.year_built or '—' }}</dd>
+      <dt>Depot (SWERK)</dt>        <dd>{{ train.depot or '—' }}</dd>
+      <dt>Status</dt>               <dd><span class="badge {{ train.status | status_badge }}">{{ train.status | replace('_',' ') }}</span></dd>
+      <dt>Acquired</dt>             <dd>{{ train.acquired_on | d }}</dd>
+      <dt>Last SAP sync</dt>        <dd>{{ train.last_sap_sync | dt }}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Operational data</h2>
+    <form method="post" action="{{ url_for('update_mileage', train_id=train.id) }}" class="form-row">
+      <div>
+        <label>Current mileage (km)</label>
+        <input type="number" name="mileage" value="{{ train.current_mileage_km or 0 }}" min="0" step="1">
+      </div>
+      <div style="align-self: end;">
+        <button class="btn" type="submit">Update mileage</button>
+      </div>
+    </form>
+
+    <form method="post" action="{{ url_for('update_train_status', train_id=train.id) }}" class="form-row">
+      <div>
+        <label>Status</label>
+        <select name="status">
+          <option value="active"      {{ 'selected' if train.status=='active'      }}>active</option>
+          <option value="in_workshop" {{ 'selected' if train.status=='in_workshop' }}>in_workshop</option>
+          <option value="standby"     {{ 'selected' if train.status=='standby'     }}>standby</option>
+          <option value="retired"     {{ 'selected' if train.status=='retired'     }}>retired</option>
+        </select>
+      </div>
+      <div style="align-self: end;">
+        <button class="btn btn-secondary" type="submit">Save status</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Maintenance plans ({{ plan_statuses|length }})</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Plan #</th><th>Description</th><th>Type</th>
+          <th>Cycle</th><th>Last done</th><th>Next due</th>
+          <th>Status</th><th>Priority</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ps in plan_statuses %}
+        {% set p = ps.plan %}
+        <tr>
+          <td class="mono">{{ p.plan_number }}</td>
+          <td>{{ p.description }}</td>
+          <td>{{ p.task_type }}</td>
+          <td class="small">
+            {% if p.interval_days %}{{ p.interval_days }} days{% endif %}
+            {% if p.interval_days and p.interval_km %}<br>{% endif %}
+            {% if p.interval_km %}{{ p.interval_km | km }}{% endif %}
+          </td>
+          <td class="small">
+            {{ p.last_performed_on | d }}
+            {% if p.last_performed_km %}<br>{{ p.last_performed_km | km }}{% endif %}
+          </td>
+          <td class="small">
+            {% if ps.next_due_date %}{{ ps.next_due_date | d }}{% endif %}
+            {% if ps.next_due_km %}<br>{{ ps.next_due_km | km }}{% endif %}
+          </td>
+          <td><span class="badge {{ ps.status | status_badge }}">{{ ps.status | replace('_',' ') }}</span></td>
+          <td>{{ p.priority }}</td>
+          <td>
+            <form method="post" action="{{ url_for('schedule_plan', plan_id=p.id) }}" class="form-inline">
+              <input type="datetime-local" name="when"
+                     value="{{ (ps.next_due_date.isoformat() if ps.next_due_date else '') }}T08:00"
+                     style="width: 165px;">
+              <select name="technician_id" style="width: 150px;">
+                <option value="">auto-assign</option>
+                {% for tech in technicians %}
+                  <option value="{{ tech.id }}">{{ tech.name }} ({{ tech.qualification }})</option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-small" type="submit">Schedule</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="muted">No plans — import from SAP (IP15).</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Work orders ({{ orders|length }})</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th><th>Description</th><th>Status</th>
+          <th>Priority</th><th>Scheduled</th><th>Technician</th><th>Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in orders %}
+        <tr>
+          <td class="mono"><a href="{{ url_for('work_order_detail', order_id=o.id) }}">{{ o.order_number }}</a></td>
+          <td>{{ o.description }}</td>
+          <td><span class="badge {{ o.status | status_badge }}">{{ o.status | replace('_',' ') }}</span></td>
+          <td>{{ o.priority }}</td>
+          <td class="small">{{ o.scheduled_start | dt }}<br>&rarr; {{ o.scheduled_end | dt }}</td>
+          <td>{{ o.technician.name if o.technician else '—' }}</td>
+          <td class="right small">
+            est. {{ o.estimated_hours | hours }}<br>
+            act. {{ o.actual_hours | hours }}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="muted">No work orders yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

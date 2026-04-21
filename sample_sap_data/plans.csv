@@ -1,0 +1,55 @@
+WARPL,EQUNR,MPTXT,TASK_TYPE,ZYKLUS_DAYS,ZYKLUS_KM,ARBEI,PRIORITY,LAST_DONE,LAST_KM
+MP-00001,T-COR-4000,Weekly safety inspection,inspection,7,,2,2-high,2025-11-14,624266
+MP-00002,T-COR-4000,Daily visual inspection,inspection,1,,0.5,3-normal,2026-04-07,641540
+MP-00003,T-COR-4000,Wheel profile measurement,preventive,,50000,3,2-high,2026-04-08,604955
+MP-00004,T-COR-4000,Fire-safety certification,inspection,365,,6,1-critical,2026-03-29,618344
+MP-00005,T-COR-4000,Monthly interior & HVAC check,preventive,30,,4,3-normal,2026-02-14,595349
+MP-00006,T-COR-4000,Traction motor overhaul,overhaul,,500000,24,1-critical,2026-04-08,571458
+MP-00007,T-ICE-4001,Monthly interior & HVAC check,preventive,30,,4,3-normal,2025-12-08,1412202
+MP-00008,T-ICE-4001,Wheel profile measurement,preventive,,50000,3,2-high,2026-02-27,1487783
+MP-00009,T-ICE-4001,Fire-safety certification,inspection,365,,6,1-critical,2025-12-28,1417301
+MP-00010,T-ICE-4001,Weekly safety inspection,inspection,7,,2,2-high,2025-11-24,1413914
+MP-00011,T-ICE-4001,Pantograph & catenary contact test,preventive,90,,2,3-normal,2026-01-28,1474710
+MP-00012,T-ICE-4002,Brake system overhaul,overhaul,,150000,12,1-critical,2026-03-03,97985
+MP-00013,T-ICE-4002,Monthly interior & HVAC check,preventive,30,,4,3-normal,2025-12-18,133158
+MP-00014,T-ICE-4002,Fire-safety certification,inspection,365,,6,1-critical,2025-11-03,110468
+MP-00015,T-ICE-4002,Pantograph & catenary contact test,preventive,90,,2,3-normal,2026-02-24,136282
+MP-00016,T-ICE-4002,Traction motor overhaul,overhaul,,500000,24,1-critical,2026-03-02,99142
+MP-00017,T-ICE-4002,Weekly safety inspection,inspection,7,,2,2-high,2026-02-02,87908
+MP-00018,T-ICE-4003,Weekly safety inspection,inspection,7,,2,2-high,2025-10-12,105780
+MP-00019,T-ICE-4003,Brake system overhaul,overhaul,,150000,12,1-critical,2025-10-12,47740
+MP-00020,T-ICE-4003,Bogie inspection,preventive,180,100000,8,2-high,2026-02-01,68214
+MP-00021,T-ICE-4003,Wheel profile measurement,preventive,,50000,3,2-high,2025-12-25,81793
+MP-00022,T-ICE-4003,Monthly interior & HVAC check,preventive,30,,4,3-normal,2025-10-15,49390
+MP-00023,T-ICE-4004,Monthly interior & HVAC check,preventive,30,,4,3-normal,2026-04-15,1150181
+MP-00024,T-ICE-4004,Bogie inspection,preventive,180,100000,8,2-high,2025-11-26,1186387
+MP-00025,T-ICE-4004,Weekly safety inspection,inspection,7,,2,2-high,2025-10-13,1144203
+MP-00026,T-ICE-4004,Pantograph & catenary contact test,preventive,90,,2,3-normal,2026-02-07,1164670
+MP-00027,T-ICE-4004,Traction motor overhaul,overhaul,,500000,24,1-critical,2026-02-25,1144341
+MP-00028,T-ICE-4005,Wheel profile measurement,preventive,,50000,3,2-high,2026-01-19,1763583
+MP-00029,T-ICE-4005,Brake system overhaul,overhaul,,150000,12,1-critical,2026-02-20,1769323
+MP-00030,T-ICE-4005,Weekly safety inspection,inspection,7,,2,2-high,2026-01-25,1761127
+MP-00031,T-ICE-4005,Bogie inspection,preventive,180,100000,8,2-high,2025-10-15,1755465
+MP-00032,T-ICE-4005,Traction motor overhaul,overhaul,,500000,24,1-critical,2026-02-07,1693258
+MP-00033,T-ICE-4006,Pantograph & catenary contact test,preventive,90,,2,3-normal,2026-01-10,582634
+MP-00034,T-ICE-4006,Weekly safety inspection,inspection,7,,2,2-high,2025-11-12,599390
+MP-00035,T-ICE-4006,Brake system overhaul,overhaul,,150000,12,1-critical,2026-01-05,591386
+MP-00036,T-ICE-4006,Fire-safety certification,inspection,365,,6,1-critical,2026-03-15,627785
+MP-00037,T-ICE-4007,Daily visual inspection,inspection,1,,0.5,3-normal,2026-03-18,257881
+MP-00038,T-ICE-4007,Weekly safety inspection,inspection,7,,2,2-high,2026-03-08,234033
+MP-00039,T-ICE-4007,Wheel profile measurement,preventive,,50000,3,2-high,2025-11-01,215517
+MP-00040,T-ICE-4007,Bogie inspection,preventive,180,100000,8,2-high,2025-12-24,251772
+MP-00041,T-ICE-4007,Monthly interior & HVAC check,preventive,30,,4,3-normal,2026-04-09,213032
+MP-00042,T-ICE-4007,Pantograph & catenary contact test,preventive,90,,2,3-normal,2026-02-01,272077
+MP-00043,T-ICE-4008,Bogie inspection,preventive,180,100000,8,2-high,2026-03-18,1324073
+MP-00044,T-ICE-4008,Monthly interior & HVAC check,preventive,30,,4,3-normal,2025-10-12,1295096
+MP-00045,T-ICE-4008,Fire-safety certification,inspection,365,,6,1-critical,2025-12-08,1322931
+MP-00046,T-ICE-4008,Daily visual inspection,inspection,1,,0.5,3-normal,2025-11-05,1273408
+MP-00047,T-ICE-4008,Traction motor overhaul,overhaul,,500000,24,1-critical,2026-02-07,1274591
+MP-00048,T-ICE-4008,Weekly safety inspection,inspection,7,,2,2-high,2025-10-20,1344031
+MP-00049,T-ICE-4009,Wheel profile measurement,preventive,,50000,3,2-high,2026-03-19,308394
+MP-00050,T-ICE-4009,Traction motor overhaul,overhaul,,500000,24,1-critical,2025-11-08,332187
+MP-00051,T-ICE-4009,Daily visual inspection,inspection,1,,0.5,3-normal,2025-12-07,308208
+MP-00052,T-ICE-4009,Pantograph & catenary contact test,preventive,90,,2,3-normal,2025-10-06,265415
+MP-00053,T-ICE-4009,Monthly interior & HVAC check,preventive,30,,4,3-normal,2026-03-30,329457
+MP-00054,T-ICE-4009,Bogie inspection,preventive,180,100000,8,2-high,2026-03-20,328553

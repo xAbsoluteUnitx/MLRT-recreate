@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Schedule · Train Maintenance{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1>Schedule · {{ range_start | d }} to {{ range_end | d }}</h1>
+  <div class="actions">
+    <form method="post" action="{{ url_for('auto_schedule') }}" class="inline">
+      <input type="hidden" name="horizon" value="14">
+      <button class="btn btn-secondary" type="submit">Auto-schedule (14 d)</button>
+    </form>
+    <a class="btn" href="{{ url_for('work_order_new') }}">+ Work order</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="cal-header">
+    <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+  </div>
+
+  {% for week in weeks %}
+  <div class="cal-row" style="margin-bottom: 4px;">
+    {% for day in week %}
+      {% set is_today = day.date == today %}
+      {% set is_past  = day.date < today %}
+      <div class="cal-cell {{ 'today' if is_today else '' }} {{ 'past' if is_past else '' }}">
+        <div class="cal-date">{{ day.date.strftime('%b %d') }}</div>
+        {% for o in day.orders %}
+          <a class="cal-pill prio-{{ o.priority }} {{ 'completed' if o.status == 'completed' else '' }}"
+             href="{{ url_for('work_order_detail', order_id=o.id) }}"
+             title="{{ o.order_number }} — {{ o.train.equipment_number }} — {{ o.description }}">
+            {{ o.train.equipment_number }}: {{ o.description | truncate(30, True, '…') }}
+          </a>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<p class="small muted">
+  Color indicates priority (<span style="color: var(--danger)">critical</span> / <span style="color: var(--warning)">high</span> / <span style="color: var(--accent-2)">normal</span> / <span style="color: var(--muted)">low</span>).
+  Completed orders are shown struck-through.
+</p>
+
+{% endblock %}
